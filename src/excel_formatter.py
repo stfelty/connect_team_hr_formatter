@@ -1,7 +1,11 @@
 """Excel formatting and labeling module.
 
-Takes raw sheet data and produces a professionally formatted .xlsx file
-with styled headers, column widths, borders, and a title label.
+Produces a .xlsx file matching the exact HR hours summary format:
+  - Row 1: date range (start date in A1, end date in B1)
+  - Row 2: column headers (bold)
+  - Row 3+: data rows with numeric hours formatted to 2 decimal places
+  - Two sheet tabs: "Hours Summary Report" and the start date (MM.DD.YYYY)
+  - Calculated columns: Paid Hours = Regular Hours + OT1 Hours
 """
 
 import logging
@@ -10,33 +14,72 @@ from datetime import datetime
 from typing import List
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment, Font, numbers
 from openpyxl.utils import get_column_letter
 
 logger = logging.getLogger(__name__)
 
-# -- Style constants ----------------------------------------------------------
+# Column order in the output spreadsheet
+OUTPUT_COLUMNS = [
+    "Employee Number",
+    "Last Name",
+    "First Name",
+    "PayType Name",
+    "Regular Hours",
+    "OT1 Hours",
+    "Paid Hours",
+    "Unpaid Hours",
+]
 
-TITLE_FONT = Font(name="Calibri", size=16, bold=True, color="1F4E79")
-TITLE_FILL = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")
-TITLE_ALIGNMENT = Alignment(horizontal="center", vertical="center")
-
-HEADER_FONT = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-HEADER_FILL = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-HEADER_ALIGNMENT = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
+HEADER_FONT = Font(name="Calibri", size=11, bold=True)
 DATA_FONT = Font(name="Calibri", size=11)
-DATA_ALIGNMENT = Alignment(vertical="center", wrap_text=True)
-EVEN_ROW_FILL = PatternFill(start_color="F2F7FB", end_color="F2F7FB", fill_type="solid")
+DATE_FONT = Font(name="Calibri", size=11, bold=True)
 
-THIN_BORDER = Border(
-    left=Side(style="thin", color="B0B0B0"),
-    right=Side(style="thin", color="B0B0B0"),
-    top=Side(style="thin", color="B0B0B0"),
-    bottom=Side(style="thin", color="B0B0B0"),
-)
 
-METADATA_FONT = Font(name="Calibri", size=9, italic=True, color="808080")
+def _find_column(headers: List[str], *possible_names: str) -> int | None:
+    """Return the index of the first matching header (case-insensitive), or None."""
+    lower_headers = [h.strip().lower() for h in headers]
+    for name in possible_names:
+        if name.lower() in lower_headers:
+            return lower_headers.index(name.lower())
+    return None
+
+
+def _to_float(value: str) -> float:
+    """Convert a string value to float, returning 0.0 on failure."""
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _build_row_data(
+    row: List[str],
+    col_map: dict[str, int | None],
+) -> dict[str, object]:
+    """Extract and compute the output fields for a single data row."""
+
+    def get(col_name: str, default: str = "") -> str:
+        idx = col_map.get(col_name)
+        if idx is not None and idx < len(row):
+            return row[idx]
+        return default
+
+    regular = _to_float(get("Regular Hours"))
+    ot1 = _to_float(get("OT1 Hours"))
+    unpaid = _to_float(get("Unpaid Hours"))
+    paid = regular + ot1  # Calculated field
+
+    return {
+        "Employee Number": get("Employee Number"),
+        "Last Name": get("Last Name"),
+        "First Name": get("First Name"),
+        "PayType Name": get("PayType Name"),
+        "Regular Hours": regular,
+        "OT1 Hours": ot1,
+        "Paid Hours": paid,
+        "Unpaid Hours": unpaid,
+    }
 
 
 def format_excel(
@@ -44,91 +87,117 @@ def format_excel(
     rows: List[List[str]],
     output_dir: str,
     filename_prefix: str,
-    title_label: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> str:
-    """Create a formatted Excel workbook from the provided data.
+    """Create the hours summary Excel workbook matching the required format.
 
     Args:
-        headers: Column header names.
-        rows: Data rows (list of lists).
+        headers: Column header names from the Google Sheet.
+        rows: Data rows from the Google Sheet (list of lists).
         output_dir: Directory to write the output file.
         filename_prefix: Prefix for the output filename.
-        title_label: Optional title label for the report. Defaults to the
-            filename_prefix with spaces.
+        start_date: Pay period start date as MM/DD/YYYY. Defaults to today.
+        end_date: Pay period end date as MM/DD/YYYY. Defaults to today.
 
     Returns:
         The full path to the generated .xlsx file.
     """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    now = datetime.now()
+
+    if not start_date:
+        start_date = now.strftime("%m/%d/%Y")
+    if not end_date:
+        end_date = now.strftime("%m/%d/%Y")
+
+    # Parse start date for the tab name (MM.DD.YYYY)
+    try:
+        parsed_start = datetime.strptime(start_date, "%m/%d/%Y")
+        tab_date_label = parsed_start.strftime("%m.%d.%Y")
+    except ValueError:
+        tab_date_label = start_date.replace("/", ".")
+
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
     filename = f"{filename_prefix}_{timestamp}.xlsx"
     filepath = os.path.join(output_dir, filename)
     os.makedirs(output_dir, exist_ok=True)
 
-    if title_label is None:
-        title_label = filename_prefix.replace("_", " ")
+    # -- Map source columns to output columns ---------------------------------
+    col_map = {
+        "Employee Number": _find_column(headers, "Employee Number", "Employee ID", "EmpNo"),
+        "Last Name": _find_column(headers, "Last Name", "LastName", "Surname"),
+        "First Name": _find_column(headers, "First Name", "FirstName", "Given Name"),
+        "PayType Name": _find_column(headers, "PayType Name", "PayType", "Pay Type"),
+        "Regular Hours": _find_column(headers, "Regular Hours", "Regular Hrs", "Reg Hours"),
+        "OT1 Hours": _find_column(headers, "OT1 Hours", "OT1 Hrs", "Overtime Hours", "OT Hours"),
+        "Unpaid Hours": _find_column(headers, "Unpaid Hours", "Unpaid Hrs"),
+    }
 
-    num_cols = len(headers)
-
+    # -- Build workbook -------------------------------------------------------
     wb = Workbook()
+
+    # === Sheet 1: "Hours Summary Report" =====================================
     ws = wb.active
-    ws.title = "Report"
+    ws.title = "Hours Summary Report"
 
-    # -- Title row (row 1) ----------------------------------------------------
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=num_cols)
-    title_cell = ws.cell(row=1, column=1, value=title_label)
-    title_cell.font = TITLE_FONT
-    title_cell.fill = TITLE_FILL
-    title_cell.alignment = TITLE_ALIGNMENT
-    ws.row_dimensions[1].height = 36
+    # Row 1: Date range
+    ws.cell(row=1, column=1, value=start_date).font = DATE_FONT
+    ws.cell(row=1, column=2, value=end_date).font = DATE_FONT
 
-    # -- Metadata row (row 2) -------------------------------------------------
-    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=num_cols)
-    meta_cell = ws.cell(
-        row=2, column=1,
-        value=f"Generated: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}  |  Rows: {len(rows)}",
-    )
-    meta_cell.font = METADATA_FONT
-    meta_cell.alignment = Alignment(horizontal="center")
-    ws.row_dimensions[2].height = 20
-
-    # -- Header row (row 3) ---------------------------------------------------
-    header_row_idx = 3
-    for col_idx, header in enumerate(headers, start=1):
-        cell = ws.cell(row=header_row_idx, column=col_idx, value=header)
+    # Row 2: Headers
+    for col_idx, header_name in enumerate(OUTPUT_COLUMNS, start=1):
+        cell = ws.cell(row=2, column=col_idx, value=header_name)
         cell.font = HEADER_FONT
-        cell.fill = HEADER_FILL
-        cell.alignment = HEADER_ALIGNMENT
-        cell.border = THIN_BORDER
-    ws.row_dimensions[header_row_idx].height = 28
 
-    # -- Data rows (starting row 4) -------------------------------------------
-    data_start_row = 4
+    # Row 3+: Data
+    numeric_columns = {"Regular Hours", "OT1 Hours", "Paid Hours", "Unpaid Hours"}
+    data_start_row = 3
     for row_offset, row_data in enumerate(rows):
+        out = _build_row_data(row_data, col_map)
         row_idx = data_start_row + row_offset
-        for col_idx in range(1, num_cols + 1):
-            value = row_data[col_idx - 1] if col_idx - 1 < len(row_data) else ""
+        for col_idx, col_name in enumerate(OUTPUT_COLUMNS, start=1):
+            value = out[col_name]
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.font = DATA_FONT
-            cell.alignment = DATA_ALIGNMENT
-            cell.border = THIN_BORDER
-            # Alternate row shading
-            if row_offset % 2 == 0:
-                cell.fill = EVEN_ROW_FILL
+            if col_name in numeric_columns:
+                cell.number_format = "0.00"
+                cell.alignment = Alignment(horizontal="right")
 
-    # -- Auto-fit column widths -----------------------------------------------
-    for col_idx in range(1, num_cols + 1):
-        max_length = len(str(headers[col_idx - 1]))
+    # Auto-fit column widths
+    for col_idx, col_name in enumerate(OUTPUT_COLUMNS, start=1):
+        max_len = len(col_name)
         for row_data in rows:
-            if col_idx - 1 < len(row_data):
-                max_length = max(max_length, len(str(row_data[col_idx - 1])))
-        adjusted_width = min(max_length + 4, 50)
-        ws.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
+            out = _build_row_data(row_data, col_map)
+            max_len = max(max_len, len(str(out[col_name])))
+        ws.column_dimensions[get_column_letter(col_idx)].width = max_len + 3
 
-    # -- Freeze panes below header --------------------------------------------
-    ws.freeze_panes = f"A{data_start_row}"
+    # === Sheet 2: date tab (MM.DD.YYYY) ======================================
+    ws2 = wb.create_sheet(title=tab_date_label)
+    # Mirror the same content on the date tab
+    ws2.cell(row=1, column=1, value=start_date).font = DATE_FONT
+    ws2.cell(row=1, column=2, value=end_date).font = DATE_FONT
 
-    # -- Auto-filter on header row --------------------------------------------
-    ws.auto_filter.ref = f"A{header_row_idx}:{get_column_letter(num_cols)}{header_row_idx + len(rows)}"
+    for col_idx, header_name in enumerate(OUTPUT_COLUMNS, start=1):
+        cell = ws2.cell(row=2, column=col_idx, value=header_name)
+        cell.font = HEADER_FONT
+
+    for row_offset, row_data in enumerate(rows):
+        out = _build_row_data(row_data, col_map)
+        row_idx = data_start_row + row_offset
+        for col_idx, col_name in enumerate(OUTPUT_COLUMNS, start=1):
+            value = out[col_name]
+            cell = ws2.cell(row=row_idx, column=col_idx, value=value)
+            cell.font = DATA_FONT
+            if col_name in numeric_columns:
+                cell.number_format = "0.00"
+                cell.alignment = Alignment(horizontal="right")
+
+    for col_idx, col_name in enumerate(OUTPUT_COLUMNS, start=1):
+        max_len = len(col_name)
+        for row_data in rows:
+            out = _build_row_data(row_data, col_map)
+            max_len = max(max_len, len(str(out[col_name])))
+        ws2.column_dimensions[get_column_letter(col_idx)].width = max_len + 3
 
     wb.save(filepath)
     logger.info("Excel file written to %s", filepath)

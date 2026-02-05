@@ -2,7 +2,7 @@
 
 Orchestrates the full workflow:
   1. Pull data from a Google Sheet
-  2. Format it as a labeled Excel spreadsheet
+  2. Format it as a labeled Excel spreadsheet (exact HR hours summary format)
   3. Upload the file to Amazon S3
 """
 
@@ -25,13 +25,15 @@ logger = logging.getLogger(__name__)
 
 def run_pipeline(
     skip_upload: bool = False,
-    title_label: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> None:
-    """Execute the full Sheets → Excel → S3 pipeline.
+    """Execute the full Sheets -> Excel -> S3 pipeline.
 
     Args:
         skip_upload: If True, generate the Excel file but do not upload to S3.
-        title_label: Optional custom title for the Excel report header.
+        start_date: Pay period start date (MM/DD/YYYY).
+        end_date: Pay period end date (MM/DD/YYYY).
     """
     # -- Validate configuration ------------------------------------------------
     if not Config.SPREADSHEET_ID:
@@ -57,7 +59,8 @@ def run_pipeline(
         rows=rows,
         output_dir=Config.OUTPUT_DIR,
         filename_prefix=Config.OUTPUT_FILENAME_PREFIX,
-        title_label=title_label,
+        start_date=start_date,
+        end_date=end_date,
     )
     logger.info("Excel file created: %s", filepath)
 
@@ -81,7 +84,7 @@ def run_pipeline(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Pull Google Sheet data, format as Excel, and upload to S3.",
+        description="Pull Google Sheet data, format as HR hours summary Excel, and upload to S3.",
     )
     parser.add_argument(
         "--skip-upload",
@@ -89,14 +92,24 @@ def main():
         help="Generate the Excel file locally without uploading to S3.",
     )
     parser.add_argument(
-        "--title",
+        "--start-date",
         type=str,
         default=None,
-        help="Custom title label for the Excel report header.",
+        help="Pay period start date in MM/DD/YYYY format (shown in cell A1).",
+    )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        default=None,
+        help="Pay period end date in MM/DD/YYYY format (shown in cell B1).",
     )
     args = parser.parse_args()
 
-    run_pipeline(skip_upload=args.skip_upload, title_label=args.title)
+    run_pipeline(
+        skip_upload=args.skip_upload,
+        start_date=args.start_date,
+        end_date=args.end_date,
+    )
 
 
 if __name__ == "__main__":
