@@ -1,0 +1,82 @@
+name: Run HR Report Pipeline
+
+on:
+  # Manual trigger — click "Run workflow" in the Actions tab
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Report date (MM/DD/YYYY). Leave blank for most recent date in sheet.'
+        required: false
+        default: ''
+      end_date:
+        description: 'Pay period end date (MM/DD/YYYY). Leave blank to match report date.'
+        required: false
+        default: ''
+      skip_upload:
+        description: 'Skip S3 upload (just generate Excel as artifact)'
+        required: false
+        type: boolean
+        default: false
+
+  # Uncomment to run on a schedule (e.g. every weekday at 7am UTC):
+  # schedule:
+  #   - cron: '0 7 * * 1-5'
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write service account key file
+        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+
+      - name: Create .env file
+        run: |
+          cat > .env << 'ENVEOF'
+          GOOGLE_SHEETS_SPREADSHEET_ID=${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
+          GOOGLE_SHEETS_RANGE=Sheet1
+          GOOGLE_SERVICE_ACCOUNT_FILE=service_account.json
+          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION=${{ secrets.AWS_REGION }}
+          S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }}
+          S3_PREFIX=hr-reports/
+          OUTPUT_DIR=output
+          OUTPUT_FILENAME_PREFIX=HR_Report
+          ENVEOF
+
+      - name: Run pipeline
+        run: |
+          ARGS=""
+          if [ "${{ inputs.skip_upload }}" = "true" ] || [ -z "${{ secrets.S3_BUCKET_NAME }}" ]; then
+            ARGS="$ARGS --skip-upload"
+          fi
+          if [ -n "${{ inputs.date }}" ]; then
+            ARGS="$ARGS --date ${{ inputs.date }}"
+          fi
+          if [ -n "${{ inputs.end_date }}" ]; then
+            ARGS="$ARGS --end-date ${{ inputs.end_date }}"
+          fi
+          python main.py $ARGS
+
+      - name: Upload Excel as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hr-report
+          path: output/*.xlsx
+          retention-days: 30
+
+      - name: Clean up secrets
+        if: always()
+        run: rm -f service_account.json .env
