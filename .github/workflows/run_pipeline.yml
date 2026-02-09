@@ -1,7 +1,6 @@
 name: Run HR Report Pipeline
 
 on:
-  # Manual trigger — click "Run workflow" in the Actions tab
   workflow_dispatch:
     inputs:
       date:
@@ -39,22 +38,37 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Write service account key file
-        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+        env:
+          SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: printenv SERVICE_ACCOUNT_JSON > service_account.json
 
       - name: Create .env file
+        env:
+          SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION_VAL: ${{ secrets.AWS_REGION }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET_NAME }}
         run: |
-          cat > .env << 'ENVEOF'
-          GOOGLE_SHEETS_SPREADSHEET_ID=${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
-          GOOGLE_SHEETS_RANGE=Sheet1
-          GOOGLE_SERVICE_ACCOUNT_FILE=service_account.json
-          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION=${{ secrets.AWS_REGION }}
-          S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }}
-          S3_PREFIX=hr-reports/
-          OUTPUT_DIR=output
-          OUTPUT_FILENAME_PREFIX=HR_Report
-          ENVEOF
+          printf '%s\n' \
+            "GOOGLE_SHEETS_SPREADSHEET_ID=${SHEETS_ID}" \
+            "GOOGLE_SHEETS_RANGE=Sheet1" \
+            "GOOGLE_SERVICE_ACCOUNT_FILE=service_account.json" \
+            "AWS_ACCESS_KEY_ID=${AWS_KEY}" \
+            "AWS_SECRET_ACCESS_KEY=${AWS_SECRET}" \
+            "AWS_REGION=${AWS_REGION_VAL}" \
+            "S3_BUCKET_NAME=${S3_BUCKET}" \
+            "S3_PREFIX=hr-reports/" \
+            "OUTPUT_DIR=output" \
+            "OUTPUT_FILENAME_PREFIX=HR_Report" \
+            > .env
+
+      - name: Verify config
+        run: |
+          echo "service_account.json exists: $(test -f service_account.json && echo yes || echo no)"
+          echo "service_account.json size: $(wc -c < service_account.json) bytes"
+          echo ".env line count: $(wc -l < .env)"
+          echo "Spreadsheet ID length: $(grep GOOGLE_SHEETS_SPREADSHEET_ID .env | cut -d= -f2 | wc -c)"
 
       - name: Run pipeline
         run: |
