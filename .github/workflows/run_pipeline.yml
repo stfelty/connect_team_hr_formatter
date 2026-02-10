@@ -65,10 +65,46 @@ jobs:
 
       - name: Verify config
         run: |
-          echo "service_account.json exists: $(test -f service_account.json && echo yes || echo no)"
-          echo "service_account.json size: $(wc -c < service_account.json) bytes"
-          echo ".env line count: $(wc -l < .env)"
-          echo "Spreadsheet ID length: $(grep GOOGLE_SHEETS_SPREADSHEET_ID .env | cut -d= -f2 | wc -c)"
+          echo "=== service_account.json ==="
+          echo "exists: $(test -f service_account.json && echo yes || echo no)"
+          echo "size: $(wc -c < service_account.json) bytes"
+          python3 -c "
+          import json
+          with open('service_account.json') as f:
+              data = json.load(f)
+          print(f\"type: {data.get('type')}\")
+          print(f\"project_id: {data.get('project_id')}\")
+          print(f\"client_email: {data.get('client_email')}\")
+          print(f\"has private_key: {'private_key' in data}\")
+          print(f\"private_key starts with: {data.get('private_key','')[:30]}\")
+          "
+          echo ""
+          echo "=== .env ==="
+          echo "line count: $(wc -l < .env)"
+          echo "Spreadsheet ID value (first 10 chars): $(grep GOOGLE_SHEETS_SPREADSHEET_ID .env | cut -d= -f2 | cut -c1-10)"
+          echo "Spreadsheet ID length: $(grep GOOGLE_SHEETS_SPREADSHEET_ID .env | cut -d= -f2 | tr -d '\n' | wc -c)"
+
+      - name: Test sheets access
+        run: |
+          python3 -c "
+          from dotenv import load_dotenv
+          load_dotenv()
+          import os
+          sid = os.getenv('GOOGLE_SHEETS_SPREADSHEET_ID', '')
+          print(f'Spreadsheet ID from env: [{sid}]')
+          print(f'Length: {len(sid)}')
+          print(f'First 10: {sid[:10]}')
+          print(f'Last 10: {sid[-10:]}')
+
+          from google.oauth2.service_account import Credentials
+          creds = Credentials.from_service_account_file(
+              'service_account.json',
+              scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
+          )
+          print(f'Auth email: {creds.service_account_email}')
+          print(f'Project: {creds.project_id}')
+          print('Credentials loaded OK')
+          "
 
       - name: Run pipeline
         run: |
